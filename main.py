@@ -15,7 +15,7 @@ async def read_root(request: Request):
 @app.post("/upload/")
 async def upload_videos(files: list[UploadFile] = File(...), path: str = Form(...)):
     # Define la ruta base del servidor
-    base_path = "D:/" if os.name == 'nt' else "/"
+    base_path = "D:/" if os.name == 'nt' else "/home/amayini/"
     
     # Combina la ruta base con el path recibido
     full_path = os.path.join(base_path, path)

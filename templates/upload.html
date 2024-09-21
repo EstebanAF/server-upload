@@ -10,7 +10,7 @@
 
 <body>
   <h1>Upload Videos</h1>
-  <form action="/upload/" method="post" enctype="multipart/form-data">
+  <form id="uploadForm" action="/upload/" method="post" enctype="multipart/form-data">
     <label for="files">Choose video files:</label>
     <input type="file" id="files" name="files" accept="video/*" multiple required>
     <br>
@@ -19,6 +19,54 @@
     <br>
     <button type="submit">Upload</button>
   </form>
+  <progress id="progressBar" value="0" max="100" style="width:100%;"></progress>
+  <p id="status"></p>
+  <p id="loaded_n_total"></p>
+
+  <script>
+    document.getElementById('uploadForm').addEventListener('submit', function (event) {
+      event.preventDefault();
+      uploadFile();
+    });
+
+    function uploadFile() {
+      var files = document.getElementById('files').files;
+      var path = document.getElementById('path').value;
+      var formData = new FormData();
+      for (var i = 0; i < files.length; i++) {
+        formData.append('files', files[i]);
+      }
+      formData.append('path', path);
+
+      var xhr = new XMLHttpRequest();
+      xhr.upload.addEventListener('progress', function (event) {
+        if (event.lengthComputable) {
+          var percentComplete = (event.loaded / event.total) * 100;
+          document.getElementById('progressBar').value = Math.round(percentComplete);
+          document.getElementById('status').innerHTML = Math.round(percentComplete) + '% uploaded... please wait';
+
+          var loadedGB = (event.loaded / (1024 * 1024 * 1024)).toFixed(2);
+          var totalGB = (event.total / (1024 * 1024 * 1024)).toFixed(2);
+          document.getElementById('loaded_n_total').innerHTML = 'Uploaded ' + loadedGB + ' GB of ' + totalGB + ' GB';
+        }
+      }, false);
+
+      xhr.addEventListener('load', function (event) {
+        document.getElementById('status').innerHTML = 'Upload complete';
+      }, false);
+
+      xhr.addEventListener('error', function (event) {
+        document.getElementById('status').innerHTML = 'Upload failed';
+      }, false);
+
+      xhr.addEventListener('abort', function (event) {
+        document.getElementById('status').innerHTML = 'Upload aborted';
+      }, false);
+
+      xhr.open('POST', '/upload/');
+      xhr.send(formData);
+    }
+  </script>
 </body>
 
 </html>
