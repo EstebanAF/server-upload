@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Form, Request
+from fastapi import FastAPI, File, UploadFile, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 import shutil
@@ -14,16 +14,29 @@ async def read_root(request: Request):
 
 @app.post("/upload/")
 async def upload_videos(files: list[UploadFile] = File(...), path: str = Form(...)):
-    # Define la ruta base del servidor
-    base_path = "D:/" if os.name == 'nt' else "/home/amayini/"
-    
-    # Combina la ruta base con el path recibido
-    full_path = os.path.join(base_path, path)
-    
-    # Verifica si la ruta completa existe, si no, la crea
+    # Define base path: allow override via env var, otherwise pick OS-specific default
+    base_path = "/Volumes/Test/"
+
+    # Validate base path availability and writability to avoid server errors on read-only volumes
+    if not os.path.isdir(base_path):
+        print(f"Base path '{base_path}' not found. Plug in or mount the drive, or change the base path.")
+        raise HTTPException(status_code=400, detail=f"Base path '{base_path}' not found. Plug in or mount the drive, or change the base path.")
+    if not os.access(base_path, os.W_OK):
+        print(f"Base path '{base_path}' is not writable (drive may be read-only, e.g., NTFS on macOS).")
+        raise HTTPException(status_code=400, detail=f"Base path '{base_path}' is not writable (drive may be read-only, e.g., NTFS on macOS).")
+
+    # Sanitize provided relative path to prevent traversal and absolute paths
+    safe_rel_path = os.path.normpath(path).lstrip(os.sep)
+    full_path = os.path.join(base_path, safe_rel_path)
+
+    # Ensure target directory exists
     if not os.path.exists(full_path):
-        os.makedirs(full_path)
-        os.chmod(path, 0o777)
+        os.makedirs(full_path, exist_ok=True)
+        try:
+            os.chmod(full_path, 0o777)
+        except Exception:
+            # Some filesystems (e.g., FAT/NTFS via third-party drivers) may not support chmod
+            pass
     
     uploaded_files = []
     
