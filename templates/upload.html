@@ -1,72 +1,335 @@
 <!-- templates/upload.html -->
 <!DOCTYPE html>
 <html lang="en">
-
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Upload Video</title>
-</head>
-
-<body>
-  <h1>Upload Videos</h1>
-  <form id="uploadForm" action="/upload/" method="post" enctype="multipart/form-data">
-    <label for="files">Choose video files:</label>
-    <input type="file" id="files" name="files" multiple required>
-    <br>
-    <label for="path">Destination Path:</label>
-    <input type="text" id="path" name="path" required>
-    <br>
-    <button type="submit">Upload</button>
-  </form>
-  <progress id="progressBar" value="0" max="100" style="width:100%;"></progress>
-  <p id="status"></p>
-  <p id="loaded_n_total"></p>
-
-  <script>
-    document.getElementById('uploadForm').addEventListener('submit', function (event) {
-      event.preventDefault();
-      uploadFile();
-    });
-
-    function uploadFile() {
-      var files = document.getElementById('files').files;
-      var path = document.getElementById('path').value;
-      var formData = new FormData();
-      for (var i = 0; i < files.length; i++) {
-        formData.append('files', files[i]);
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Upload Videos</title>
+    <style>
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 24px;
       }
-      formData.append('path', path);
+      .row {
+        margin: 8px 0;
+      }
+      .controls {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .file-row {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 8px 12px;
+        margin: 8px 0;
+      }
+      .file-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .file-meta {
+        color: #555;
+        font-size: 12px;
+      }
+      progress {
+        width: 100%;
+        height: 14px;
+      }
+      .status-ok {
+        color: #0a7;
+      }
+      .status-error {
+        color: #c22;
+      }
+      .muted {
+        color: #777;
+      }
+    </style>
+    <meta http-equiv="Cache-Control" content="no-store" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+  </head>
 
-      var xhr = new XMLHttpRequest();
-      xhr.upload.addEventListener('progress', function (event) {
-        if (event.lengthComputable) {
-          var percentComplete = (event.loaded / event.total) * 100;
-          document.getElementById('progressBar').value = Math.round(percentComplete);
-          document.getElementById('status').innerHTML = Math.round(percentComplete) + '% uploaded... please wait';
+  <body>
+    <h1>Upload Videos</h1>
 
-          var loadedGB = (event.loaded / (1024 * 1024 * 1024)).toFixed(2);
-          var totalGB = (event.total / (1024 * 1024 * 1024)).toFixed(2);
-          document.getElementById('loaded_n_total').innerHTML = 'Uploaded ' + loadedGB + ' GB of ' + totalGB + ' GB';
+    <div class="row">
+      <label for="files">Choose video files:</label>
+      <input type="file" id="files" multiple required />
+    </div>
+
+    <div class="row">
+      <label for="path">Destination Path:</label>
+      <input type="text" id="path" placeholder="e.g. MyFolder/2025-08-22" required />
+    </div>
+
+    <div class="row controls">
+      <div>
+        <label for="concurrency">Concurrency:</label>
+        <input type="number" id="concurrency" min="1" max="16" value="6" />
+      </div>
+      <button id="startBtn">Start Upload</button>
+      <button id="cancelBtn" type="button">Cancel All</button>
+      <span id="queueStatus" class="muted"></span>
+    </div>
+
+    <div class="row">
+      <label>Overall progress</label>
+      <progress id="overallProgress" value="0" max="100"></progress>
+      <div id="overallText" class="muted">0.00 GB / 0.00 GB (0%)</div>
+    </div>
+
+    <h3>Files</h3>
+    <div id="fileList"></div>
+
+    <script>
+      const MAX_RETRIES = 3
+      const BASE_BACKOFF_MS = 1000
+
+      const filesInput = document.getElementById('files')
+      const pathInput = document.getElementById('path')
+      const startBtn = document.getElementById('startBtn')
+      const cancelBtn = document.getElementById('cancelBtn')
+      const concurrencyInput = document.getElementById('concurrency')
+      const fileList = document.getElementById('fileList')
+      const overallProgress = document.getElementById('overallProgress')
+      const overallText = document.getElementById('overallText')
+      const queueStatus = document.getElementById('queueStatus')
+
+      let fileStates = []
+      let totalBytes = 0
+      let cancelAll = false
+      let activeCount = 0
+
+      function toHuman(bytes) {
+        const gb = bytes / (1024 * 1024 * 1024)
+        return gb.toFixed(2) + ' GB'
+      }
+
+      function createFileRow(file) {
+        const row = document.createElement('div')
+        row.className = 'file-row'
+
+        const head = document.createElement('div')
+        head.className = 'file-head'
+        const nameEl = document.createElement('div')
+        nameEl.textContent = file.name
+        const metaEl = document.createElement('div')
+        metaEl.className = 'file-meta'
+        metaEl.textContent = toHuman(file.size)
+        head.appendChild(nameEl)
+        head.appendChild(metaEl)
+
+        const progress = document.createElement('progress')
+        progress.max = 100
+        progress.value = 0
+        const statusEl = document.createElement('div')
+        statusEl.className = 'muted'
+        statusEl.textContent = 'Pending'
+
+        row.appendChild(head)
+        row.appendChild(progress)
+        row.appendChild(statusEl)
+
+        return { row, progress, statusEl }
+      }
+
+      function buildStates() {
+        fileStates = []
+        fileList.innerHTML = ''
+        const files = Array.from(filesInput.files || [])
+        totalBytes = files.reduce((acc, f) => acc + f.size, 0)
+        files.forEach((f) => {
+          const ui = createFileRow(f)
+          fileList.appendChild(ui.row)
+          fileStates.push({
+            file: f,
+            loaded: 0,
+            status: 'pending',
+            retries: 0,
+            xhr: null,
+            ui
+          })
+        })
+        updateOverall()
+        updateQueueStatus()
+      }
+
+      function updateOverall() {
+        const loaded = fileStates.reduce((acc, s) => acc + s.loaded, 0)
+        const percent = totalBytes > 0 ? Math.floor((loaded / totalBytes) * 100) : 0
+        overallProgress.value = percent
+        overallText.textContent = `${toHuman(loaded)} / ${toHuman(totalBytes)} (${percent}%)`
+      }
+
+      function updateQueueStatus() {
+        const remaining = fileStates.filter(
+          (s) => s.status === 'pending' || s.status === 'uploading'
+        ).length
+        queueStatus.textContent = `${activeCount} active · ${remaining} remaining`
+      }
+
+      function sleep(ms) {
+        return new Promise((r) => setTimeout(r, ms))
+      }
+
+      async function uploadWithRetry(state, path) {
+        let attempt = 0
+        while (attempt <= MAX_RETRIES && !cancelAll) {
+          try {
+            await uploadOnce(state, path)
+            return // success
+          } catch (err) {
+            attempt += 1
+            state.retries = attempt
+            if (attempt > MAX_RETRIES || cancelAll) {
+              throw err
+            }
+            const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt - 1) + Math.random() * 300
+            state.ui.statusEl.textContent = `Retrying (${attempt}/${MAX_RETRIES}) in ${Math.round(
+              backoff
+            )} ms...`
+            await sleep(backoff)
+          }
         }
-      }, false);
+      }
 
-      xhr.addEventListener('load', function (event) {
-        document.getElementById('status').innerHTML = 'Upload complete';
-      }, false);
+      function uploadOnce(state, path) {
+        return new Promise((resolve, reject) => {
+          const formData = new FormData()
+          formData.append('file', state.file)
+          formData.append('path', path)
 
-      xhr.addEventListener('error', function (event) {
-        document.getElementById('status').innerHTML = 'Upload failed';
-      }, false);
+          const xhr = new XMLHttpRequest()
+          state.xhr = xhr
+          state.status = 'uploading'
+          state.ui.statusEl.textContent = 'Uploading...'
+          updateQueueStatus()
 
-      xhr.addEventListener('abort', function (event) {
-        document.getElementById('status').innerHTML = 'Upload aborted';
-      }, false);
+          xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+              state.loaded = e.loaded
+              const percent = Math.floor((e.loaded / e.total) * 100)
+              state.ui.progress.value = percent
+              state.ui.statusEl.textContent = `Uploading... ${percent}%`
+              updateOverall()
+            }
+          })
 
-      xhr.open('POST', '/upload/');
-      xhr.send(formData);
-    }
-  </script>
-</body>
+          xhr.addEventListener('load', () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              state.loaded = state.file.size
+              state.status = 'done'
+              state.ui.progress.value = 100
+              state.ui.statusEl.textContent = 'Completed'
+              state.ui.statusEl.className = 'status-ok'
+              updateOverall()
+              resolve()
+            } else if (xhr.status >= 500 || xhr.status === 0) {
+              // retry on server errors or network failures
+              state.status = 'pending'
+              state.ui.statusEl.textContent = `Server error ${xhr.status}. Will retry.`
+              reject(new Error('server-error'))
+            } else {
+              // 4xx: do not retry
+              state.status = 'error'
+              state.ui.statusEl.textContent = `Failed (${xhr.status})`
+              state.ui.statusEl.className = 'status-error'
+              reject(new Error('client-error'))
+            }
+          })
 
+          xhr.addEventListener('error', () => {
+            state.status = 'pending'
+            state.ui.statusEl.textContent = 'Network error. Will retry.'
+            reject(new Error('network-error'))
+          })
+
+          xhr.addEventListener('abort', () => {
+            state.status = 'aborted'
+            state.ui.statusEl.textContent = 'Aborted'
+            state.ui.statusEl.className = 'status-error'
+            reject(new Error('aborted'))
+          })
+
+          xhr.open('POST', '/upload/single')
+          xhr.send(formData)
+        })
+      }
+
+      async function runQueue() {
+        const path = pathInput.value.trim()
+        if (!path) {
+          alert('Destination path is required')
+          return
+        }
+        const concurrency = Math.max(1, Math.min(16, parseInt(concurrencyInput.value || '6', 10)))
+        cancelAll = false
+        activeCount = 0
+
+        const pending = fileStates.filter((s) => s.status === 'pending')
+        let nextIndex = 0
+
+        return new Promise((resolve) => {
+          const maybeStartNext = () => {
+            if (cancelAll) {
+              resolve()
+              return
+            }
+            while (activeCount < concurrency && nextIndex < pending.length) {
+              const state = pending[nextIndex++]
+              activeCount += 1
+              updateQueueStatus()
+              uploadWithRetry(state, path)
+                .catch(() => {})
+                .finally(() => {
+                  activeCount -= 1
+                  updateQueueStatus()
+                  if (nextIndex >= pending.length && activeCount === 0) {
+                    resolve()
+                  } else {
+                    maybeStartNext()
+                  }
+                })
+            }
+          }
+          maybeStartNext()
+        })
+      }
+
+      function abortAllActive() {
+        cancelAll = true
+        fileStates.forEach((s) => {
+          if (s.xhr && s.status === 'uploading') {
+            try {
+              s.xhr.abort()
+            } catch (e) {}
+          }
+        })
+        updateQueueStatus()
+      }
+
+      // Wire UI events
+      filesInput.addEventListener('change', buildStates)
+      startBtn.addEventListener('click', async () => {
+        if (!filesInput.files || filesInput.files.length === 0) {
+          alert('Please select files first')
+          return
+        }
+        startBtn.disabled = true
+        concurrencyInput.disabled = true
+        buildStates()
+        await runQueue()
+        startBtn.disabled = false
+        concurrencyInput.disabled = false
+      })
+      cancelBtn.addEventListener('click', abortAllActive)
+    </script>
+  </body>
 </html>
